@@ -1,0 +1,4 @@
+group Server
+    FParsec
+    LiteDB.FSharp
+    Antlr4.Runtime.Standard
