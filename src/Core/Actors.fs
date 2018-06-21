@@ -1,7 +1,5 @@
 module Actors
 
-open System.Collections.Generic
-
 open Shared
 open ActorsCore
 open ActorsTypes

@@ -10,63 +10,38 @@ open Fable.PowerPack.Fetch
 open Shared
 
 open Fulma
-open Fable.Core
-open Fable.Import.React
-open Fable.Core.JsInterop
+open ForceGraph
+open Fulma
 
-
-type Model = { Query : string; Graph : Expr list }
+type Model = 
+    { Query : string
+      Graph : Expr list
+      Examples : string list
+      SelectedExample : string }
 
 type Msg =
 | Query
+| Load
 | QueryChanged of string
+| ExampleChanged of string
+| FetchExamples of Result<string list, exn>
 | FetchGraph of Result<Expr list, exn>
 | Init of Result<string, exn>
 
-type Strength = { collide : int }
-
-type SimulationOptions = { height : int; width : int; animate : bool; strength : Strength; alpha : int }
-
-type Node = { id : string }
-
-type Link = { source : string; target : string }
-
-[<RequireQualifiedAccess>]
-type ForceGraphProps =
-    | SimulationOptions of SimulationOptions
-    | HighlightDependencies of bool
-    static member Custom(key: string, value: obj): ForceGraphProps = unbox(key, value)
-
-[<RequireQualifiedAccess>]
-type ForceGraphNodeProps =
-    | Fill of string
-    | Node of Node
-    | R of int
-    | Cx of int
-    | Cy of int
-    static member Custom(key: string, value: obj): ForceGraphNodeProps = unbox(key, value)
-
-[<RequireQualifiedAccess>]
-type ForceGraphLinkProps =
-    | Link of Link
-    static member Custom(key: string, value: obj): ForceGraphLinkProps = unbox(key, value)
-
-let forceGraph (props: ForceGraphProps list) (children : ReactElement list) : ReactElement =
-    ofImport "InteractiveForceGraph" "react-vis-force" (keyValueList CaseRules.LowerFirst props) children
-let forceGraphNode (props: ForceGraphNodeProps list): ReactElement = 
-    ofImport "ForceGraphNode" "react-vis-force" (keyValueList CaseRules.LowerFirst props) []
-    
-let forceGraphLink (props: ForceGraphLinkProps list): ReactElement = 
-    ofImport "ForceGraphLink" "react-vis-force" (keyValueList CaseRules.LowerFirst props) []
-
 let init () : Model * Cmd<Msg> =
-    let model = { Query = ""; Graph = [] }
+    let model = { Query = ""; Graph = []; Examples = []; SelectedExample = "" }
     let cmd =
-        Cmd.ofPromise
-            (fetchAs<string> "/api/ping")
-            []
-            (Ok >> Init)
-            (Error >> Init)
+        Cmd.batch 
+            [ Cmd.ofPromise
+                  (fetchAs<string> "/ping")
+                  []
+                  (Ok >> Init)
+                  (Error >> Init)
+              Cmd.ofPromise
+                  (fetchAs<string list> "/api/getExamplesName")
+                  []
+                  (Ok >> FetchExamples)
+                  (Error >> FetchExamples) ]                
     model, cmd
 
 let queryGraph query model : Model * Cmd<Msg> =
@@ -78,10 +53,22 @@ let queryGraph query model : Model * Cmd<Msg> =
             (Error >> FetchGraph)
     model, cmd
 
+let loadGraph example model : Model * Cmd<Msg> =
+    let cmd =
+        Cmd.ofPromise
+            (fetchAs<Expr list> (sprintf "/api/loadExample?Example=%s" example))
+            []
+            (Ok >> FetchGraph)
+            (Error >> FetchGraph)
+    model, cmd        
+
 let update (msg : Msg) (model : Model) : Model * Cmd<Msg> =
     match model,  msg with
     | _, Query -> queryGraph model.Query model
+    | _, Load -> loadGraph model.SelectedExample model
     | _, QueryChanged query -> { model with Query = query }, Cmd.none
+    | _, ExampleChanged example -> { model with SelectedExample = example }, Cmd.none
+    | _, FetchExamples (Ok examples) -> { model with Examples = examples }, Cmd.none
     | _, FetchGraph (Ok graph) -> { model with Graph = graph }, Cmd.none
     | _, Init (Ok x) -> model, Cmd.none
     | _ -> model, Cmd.none
@@ -124,14 +111,19 @@ let view (model : Model) (dispatch : Msg -> unit) =
 
           Container.container []
               [ Content.content [ Content.Modifiers [ Modifier.TextAlignment (Screen.All, TextAlignment.Centered) ] ]
-                    [ Input.text [ Input.Option.OnChange (fun x -> dispatch (QueryChanged x.Value)) ]
-                      button "Run" (fun _ -> dispatch Query) ]
+                    [ Input.text [ Input.OnChange (fun x -> dispatch (QueryChanged x.Value)) ]
+                      button "Run" (fun _ -> dispatch Query)
+                      select [ OnChange (fun x -> dispatch (ExampleChanged x.Value)) ] (model.Examples |> List.map (fun x -> option [Label x; Value x] []))
+                      button "Load" (fun _ -> dispatch Load) ]
                 Columns.columns []
                     [ Column.column [] [ forceGraph [ ForceGraphProps.SimulationOptions { height = 500; width = 500; animate = true; strength = { collide = 8 }; alpha = 1 }; ForceGraphProps.HighlightDependencies true ] 
-                        [ for expr in model.Graph do
+                        [ for expr in model.Graph |> List.filter (fun e -> match e with | Pattern(NodePattern _) -> true | _ -> false) do
                             match expr with
                             | Pattern(NodePattern node) ->
                                 yield forceGraphNode [ ForceGraphNodeProps.Fill "blue"; ForceGraphNodeProps.Node { id = node.Id }; ForceGraphNodeProps.R 10 ]
+                            | _ -> ()
+                          for expr in model.Graph |> List.filter (fun e -> match e with | Pattern(RelationPattern _) -> true | _ -> false) do
+                            match expr with
                             | Pattern(RelationPattern(source, relation, target)) ->
                                 yield forceGraphLink [ ForceGraphLinkProps.Link { source = source.Id; target = target.Id } ]
                             | _ -> () ] ] ] ]
